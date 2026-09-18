@@ -452,6 +452,25 @@ function renderLobby() {
   });
   wrap.appendChild(card);
 
+  const modeCard = el(`
+    <div class="card">
+      <div class="eyebrow">Modo de jogo</div>
+      <div class="segmented-control mt">
+        <button class="seg-btn ${s.mode === 'guess_tier' ? 'active' : ''}" data-mode="guess_tier">Adivinhe o tier</button>
+        <button class="seg-btn ${s.mode === 'guess_creator' ? 'active' : ''}" data-mode="guess_creator">Quem fez a Tier List?</button>
+      </div>
+      <p class="small mt" style="margin-top:10px;">${s.mode === 'guess_tier' ? 'Modo padrão. Receba um tier secreto e dê dicas para os outros adivinharem.' : 'Novo! Todos escrevem itens, todos criam uma tier list, e você tenta adivinhar de quem é a tier list.'}</p>
+    </div>
+  `);
+  if (isHost()) {
+    modeCard.querySelectorAll('.seg-btn').forEach(b => {
+      b.addEventListener('click', () => changeMode(b.dataset.mode));
+    });
+  } else {
+    modeCard.querySelectorAll('.seg-btn').forEach(b => b.disabled = true);
+  }
+  wrap.appendChild(modeCard);
+
   wrap.appendChild(renderThemeSelector());
 
   if (isHost()) {
@@ -707,6 +726,7 @@ function renderGuessing() {
       actionCard.appendChild(el(`<label>De quem é essa Tier List?</label>`));
       const btnRow = el(`<div class="player-btns"></div>`);
       s.players.forEach(p => {
+        if (p.id === clientId) return; // Não permite votar em si mesmo
         const b = el(`<button class="btn btn-block player-guess-btn">${escapeHtml(p.name)}</button>`);
         b.addEventListener('click', () => submitGuess(p.id));
         btnRow.appendChild(b);
