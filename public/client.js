@@ -45,6 +45,7 @@ const state = {
   roomCode: '',
   maxRoundsInput: 6,
   draftText: '',
+  draftTierList: {},
   themeSearch: '',
   error: '',
   loading: false,
@@ -141,7 +142,11 @@ function submitAnswer() {
   state.draftText = '';
 }
 function hostGoToGuessing() { state.socket.emit('go_to_guessing'); }
-function submitGuess(tier) { state.socket.emit('submit_guess', { tier }); }
+function submitGuess(guess) { state.socket.emit('submit_guess', { guess }); }
+function changeMode(mode) { state.socket.emit('change_mode', { mode }); }
+function submitTierList() {
+  state.socket.emit('submit_tier_list', { tierList: state.draftTierList });
+}
 function hostReveal() { state.socket.emit('reveal'); }
 function hostNextTurn() { state.socket.emit('next_turn'); }
 function hostNextRound() { state.socket.emit('next_round'); }
@@ -310,6 +315,7 @@ function renderGame() {
   switch (s.phase) {
     case 'lobby': mainContent = renderLobby(); break;
     case 'writing': mainContent = renderWriting(); break;
+    case 'making_tier_lists': mainContent = renderMakingTierLists(); break;
     case 'guessing': mainContent = renderGuessing(); break;
     case 'reveal': mainContent = renderReveal(); break;
     case 'scoreboard': mainContent = renderScoreboard(); break;
@@ -317,8 +323,8 @@ function renderGame() {
     default: mainContent = el(`<div class="card">Fase desconhecida.</div>`); break;
   }
 
-  // Se for durante o jogo (writing, guessing, reveal), exibe sidebar à esquerda
-  const showSidebar = ['writing', 'guessing', 'reveal'].includes(s.phase);
+  // Se for durante o jogo, exibe sidebar à esquerda
+  const showSidebar = ['writing', 'making_tier_lists', 'guessing', 'reveal'].includes(s.phase);
   if (showSidebar) {
     const layout = el(`<div class="game-layout"></div>`);
     layout.appendChild(renderSidebar());
@@ -484,10 +490,14 @@ function renderWriting() {
           <div class="theme-title">${escapeHtml(s.theme)}</div>
         </div>
       </div>
+      ${s.mode === 'guess_tier' ? `
       <div class="tier-card" style="background:${TIER_COLORS[s.myTier] || '#333'}">
         <div class="label">Seu tier secreto</div>
         <div class="big">${s.myTier || '?'}</div>
       </div>
+      ` : `
+      <div class="status-line mb">Escreva um item sobre o tema para todos classificarem nas Tier Lists!</div>
+      `}
     </div>
   `);
   wrap.appendChild(banner);
@@ -498,7 +508,7 @@ function renderWriting() {
   } else {
     writeCard.appendChild(el(`
       <div>
-        <label>Escreva algo de "${escapeHtml(s.theme)}" que combine com o tier ${s.myTier || ''}</label>
+        <label>Escreva algo de "${escapeHtml(s.theme)}" ${s.mode === 'guess_tier' ? `que combine com o tier ${s.myTier || ''}` : ''}</label>
         <div class="field"><textarea id="answerInput" placeholder="Ex: Calabresa" maxlength="60"></textarea></div>
       </div>
     `));
@@ -538,43 +548,171 @@ function renderWriting() {
   return wrap;
 }
 
+function renderMakingTierLists() {
+  const s = state.server;
+  const wrap = el(`<div></div>`);
+
+  if (s.myTierListSubmitted) {
+    wrap.appendChild(el(`<div class="card"><div class="status-line">Tier list enviada. Aguardando os outros terminarem...</div></div>`));
+  } else {
+    const card = el(`
+      <div class="card">
+        <div class="round">Rodada ${s.round} de ${s.maxRounds}</div>
+        <div class="theme-title" style="margin-bottom:14px;">${escapeHtml(s.theme)}</div>
+        <p class="status-line mb">Classifique todos os itens abaixo para criar a sua Tier List!</p>
+      </div>
+    `);
+    
+    const listWrap = el(`<div class="item-list-wrap"></div>`);
+    s.allSubmissions.forEach((sub) => {
+      const itemTier = state.draftTierList[sub.id];
+      const itemEl = el(`
+        <div class="tier-item-row">
+          <div class="item-text">${escapeHtml(sub.text)}</div>
+          <div class="item-tier-btns">
+            ${TIERS.map(t => `<button class="mini-tier-btn ${itemTier === t ? 'selected' : ''}" style="--tc:${TIER_COLORS[t]}" data-tier="${t}">${t}</button>`).join('')}
+          </div>
+        </div>
+      `);
+      itemEl.querySelectorAll('.mini-tier-btn').forEach(b => {
+        b.addEventListener('click', () => {
+          state.draftTierList[sub.id] = b.dataset.tier;
+          render();
+        });
+      });
+      listWrap.appendChild(itemEl);
+    });
+    card.appendChild(listWrap);
+
+    const allAssigned = s.allSubmissions.length > 0 && s.allSubmissions.every(sub => state.draftTierList[sub.id]);
+    const btn = el(`<button class="btn btn-brand btn-block mt">Enviar Tier List</button>`);
+    btn.disabled = !allAssigned;
+    btn.addEventListener('click', () => {
+      if (allAssigned) submitTierList();
+    });
+    card.appendChild(btn);
+    wrap.appendChild(card);
+  }
+
+  const total = s.players.length;
+  const done = s.tierListsSubmittedCount || 0;
+  const progressCard = el(`
+    <div class="card mt">
+      <div class="small">${done} de ${total} jogadores já enviaram</div>
+      <div class="progress"><div style="width:${total ? Math.round((done / total) * 100) : 0}%"></div></div>
+    </div>
+  `);
+  const writingBanner = renderAutoBanner('Indo para os palpites em');
+  if (writingBanner) progressCard.appendChild(writingBanner);
+  wrap.appendChild(progressCard);
+
+  if (isHost()) {
+    const host = el(`
+      <div class="card">
+        <span class="host-tag">Painel do anfitrião</span>
+        <button class="btn btn-brand btn-block" id="goGuess">Ir para os palpites agora (${done}/${total})</button>
+      </div>
+    `);
+    host.querySelector('#goGuess').addEventListener('click', hostGoToGuessing);
+    wrap.appendChild(host);
+  }
+
+  return wrap;
+}
+
 function renderGuessing() {
   const s = state.server;
   const wrap = el(`<div></div>`);
-  wrap.appendChild(el(`
-    <div class="card">
-      <div class="round">Rodada ${s.round} · Palpite ${s.turnIndex + 1} de ${s.totalTurns}</div>
-      <div class="theme-title" style="margin-bottom:14px;">${escapeHtml(s.theme)}</div>
-      <div class="submission-box"><strong>${escapeHtml(s.currentSubmitterName)}</strong>&nbsp;escreveu:&nbsp;"${escapeHtml(s.currentSubmissionText)}"</div>
-    </div>
-  `));
-
-  const actionCard = el(`<div class="card"></div>`);
-  if (s.isCurrentSubmitter) {
-    actionCard.appendChild(el(`
-      <div>
-        <div class="status-line">É a vez de todo mundo tentar adivinhar o SEU tier. Só espera!</div>
-        <div class="small mt">${s.guessCount} de ${s.guessTotal} já palpitaram</div>
-        <div class="progress"><div style="width:${s.guessTotal ? Math.round((s.guessCount / s.guessTotal) * 100) : 0}%"></div></div>
-      </div>
-    `));
-  } else if (s.myGuess) {
-    actionCard.appendChild(el(`
-      <div>
-        <div class="status-line">Palpite enviado: <strong style="color:${TIER_COLORS[s.myGuess]}">${s.myGuess}</strong>. Esperando os outros...</div>
-        <div class="small mt">${s.guessCount} de ${s.guessTotal} já palpitaram</div>
-        <div class="progress"><div style="width:${s.guessTotal ? Math.round((s.guessCount / s.guessTotal) * 100) : 0}%"></div></div>
+  
+  if (s.mode === 'guess_tier') {
+    wrap.appendChild(el(`
+      <div class="card">
+        <div class="round">Rodada ${s.round} · Palpite ${s.turnIndex + 1} de ${s.totalTurns}</div>
+        <div class="theme-title" style="margin-bottom:14px;">${escapeHtml(s.theme)}</div>
+        <div class="submission-box"><strong>${escapeHtml(s.currentSubmitterName)}</strong>&nbsp;escreveu:&nbsp;"${escapeHtml(s.currentSubmissionText)}"</div>
       </div>
     `));
   } else {
-    actionCard.appendChild(el(`<label>Em qual tier ${escapeHtml(s.currentSubmitterName)} caiu?</label>`));
-    const btnRow = el(`<div class="tier-btns"></div>`);
-    TIERS.forEach((t) => {
-      const b = el(`<button class="tier-btn" style="background:${TIER_COLORS[t]}">${t}</button>`);
-      b.addEventListener('click', () => submitGuess(t));
-      btnRow.appendChild(b);
+    const tlCard = el(`
+      <div class="card">
+        <div class="round">Rodada ${s.round} · Palpite ${s.turnIndex + 1} de ${s.totalTurns}</div>
+        <div class="theme-title" style="margin-bottom:14px;">${escapeHtml(s.theme)}</div>
+        <div class="status-line mb" style="margin-bottom:14px;">Observe a Tier List abaixo:</div>
+        <div class="visual-tier-list"></div>
+      </div>
+    `);
+    const vtl = tlCard.querySelector('.visual-tier-list');
+    TIERS.forEach(t => {
+      const items = s.allSubmissions.filter(sub => s.currentTierList[sub.id] === t);
+      if (items.length > 0) {
+        vtl.appendChild(el(`
+          <div class="vtl-row">
+            <div class="vtl-label" style="background:${TIER_COLORS[t]}">${t}</div>
+            <div class="vtl-items">${items.map(i => `<span class="vtl-item">${escapeHtml(i.text)}</span>`).join('')}</div>
+          </div>
+        `));
+      }
     });
-    actionCard.appendChild(btnRow);
+    wrap.appendChild(tlCard);
+  }
+
+  const actionCard = el(`<div class="card"></div>`);
+  if (s.mode === 'guess_tier') {
+    if (s.isCurrentSubmitter) {
+      actionCard.appendChild(el(`
+        <div>
+          <div class="status-line">É a vez de todo mundo tentar adivinhar o SEU tier. Só espera!</div>
+          <div class="small mt">${s.guessCount} de ${s.guessTotal} já palpitaram</div>
+          <div class="progress"><div style="width:${s.guessTotal ? Math.round((s.guessCount / s.guessTotal) * 100) : 0}%"></div></div>
+        </div>
+      `));
+    } else if (s.myGuess) {
+      actionCard.appendChild(el(`
+        <div>
+          <div class="status-line">Palpite enviado: <strong style="color:${TIER_COLORS[s.myGuess]}">${s.myGuess}</strong>. Esperando os outros...</div>
+          <div class="small mt">${s.guessCount} de ${s.guessTotal} já palpitaram</div>
+          <div class="progress"><div style="width:${s.guessTotal ? Math.round((s.guessCount / s.guessTotal) * 100) : 0}%"></div></div>
+        </div>
+      `));
+    } else {
+      actionCard.appendChild(el(`<label>Em qual tier ${escapeHtml(s.currentSubmitterName)} caiu?</label>`));
+      const btnRow = el(`<div class="tier-btns"></div>`);
+      TIERS.forEach((t) => {
+        const b = el(`<button class="tier-btn" style="background:${TIER_COLORS[t]}">${t}</button>`);
+        b.addEventListener('click', () => submitGuess(t));
+        btnRow.appendChild(b);
+      });
+      actionCard.appendChild(btnRow);
+    }
+  } else {
+    // guess_creator
+    if (s.isCurrentSubmitter) {
+      actionCard.appendChild(el(`
+        <div>
+          <div class="status-line">Essa é a SUA Tier List! Espere os outros tentarem adivinhar.</div>
+          <div class="small mt">${s.guessCount} de ${s.guessTotal} já palpitaram</div>
+          <div class="progress"><div style="width:${s.guessTotal ? Math.round((s.guessCount / s.guessTotal) * 100) : 0}%"></div></div>
+        </div>
+      `));
+    } else if (s.myGuess) {
+      const guessedName = s.players.find(p => p.id === s.myGuess)?.name || '?';
+      actionCard.appendChild(el(`
+        <div>
+          <div class="status-line">Você apostou que essa Tier List é de: <strong>${escapeHtml(guessedName)}</strong>. Esperando os outros...</div>
+          <div class="small mt">${s.guessCount} de ${s.guessTotal} já palpitaram</div>
+          <div class="progress"><div style="width:${s.guessTotal ? Math.round((s.guessCount / s.guessTotal) * 100) : 0}%"></div></div>
+        </div>
+      `));
+    } else {
+      actionCard.appendChild(el(`<label>De quem é essa Tier List?</label>`));
+      const btnRow = el(`<div class="player-btns"></div>`);
+      s.players.forEach(p => {
+        const b = el(`<button class="btn btn-block player-guess-btn">${escapeHtml(p.name)}</button>`);
+        b.addEventListener('click', () => submitGuess(p.id));
+        btnRow.appendChild(b);
+      });
+      actionCard.appendChild(btnRow);
+    }
   }
   wrap.appendChild(actionCard);
 
@@ -604,21 +742,29 @@ function renderReveal() {
   const card = el(`
     <div class="card">
       <div class="round">Rodada ${s.round} · Revelação</div>
-      <div class="submission-box">"${escapeHtml(s.currentSubmissionText)}"</div>
-      <div class="tier-card" style="background:${TIER_COLORS[rev.actualTier]}">
-        <div class="label">${escapeHtml(rev.submitterName)} recebeu o tier</div>
-        <div class="big">${rev.actualTier}</div>
-      </div>
-      <div class="small">+${rev.submitterGain} ponto(s) para ${escapeHtml(rev.submitterName)}</div>
+      ${s.mode === 'guess_tier' ? `
+        <div class="submission-box">"${escapeHtml(s.currentSubmissionText)}"</div>
+        <div class="tier-card" style="background:${TIER_COLORS[rev.actualTier]}">
+          <div class="label">${escapeHtml(rev.submitterName)} recebeu o tier</div>
+          <div class="big">${rev.actualTier}</div>
+        </div>
+        <div class="small">+${rev.submitterGain} ponto(s) para ${escapeHtml(rev.submitterName)}</div>
+      ` : `
+        <div class="status-line mb">A Tier List era de...</div>
+        <h2 style="font-size:32px; color:var(--brand); text-align:center; margin-bottom: 20px;">${escapeHtml(rev.submitterName)}</h2>
+      `}
       <div class="divider"></div>
     </div>
   `);
   const guessList = el(`<div></div>`);
   rev.results.forEach((r) => {
+    const guessHtml = s.mode === 'guess_tier' 
+      ? `<span class="pill" style="background:${TIER_COLORS[r.guess]}">${r.guess}</span>`
+      : `<span class="pill-name">${escapeHtml(r.guess)}</span>`;
     guessList.appendChild(el(`
       <div class="guess-row">
         <span>${escapeHtml(r.name)}</span>
-        <span class="pill" style="background:${TIER_COLORS[r.guess]}">${r.guess}</span>
+        ${guessHtml}
         <span class="${r.correct ? 'result-ok' : 'result-bad'}">${r.correct ? 'acertou +1' : 'errou'}</span>
       </div>
     `));

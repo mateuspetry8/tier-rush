@@ -799,6 +799,187 @@ button.btn:disabled {
   box-shadow: 0 0 12px rgba(239, 68, 68, 0.1);
 }
 
+/* ---------------------------------------------------------------------------
+   Novos Estilos: Modo Quem fez a Tier List?
+   --------------------------------------------------------------------------- */
+
+.segmented-control {
+  display: flex;
+  background: var(--surface2);
+  border-radius: 12px;
+  padding: 4px;
+  gap: 4px;
+}
+
+.seg-btn {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: var(--ink-dim);
+  font-family: 'Space Grotesk', sans-serif;
+  font-weight: 600;
+  font-size: 14px;
+  padding: 10px 0;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.seg-btn.active {
+  background: var(--brand);
+  color: var(--brand-ink);
+  box-shadow: 0 2px 8px rgba(255, 207, 77, 0.2);
+}
+
+.seg-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Criar Tier List */
+.item-list-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 20px;
+}
+
+.tier-item-row {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: var(--surface2);
+  padding: 14px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+}
+
+.item-text {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.item-tier-btns {
+  display: flex;
+  gap: 6px;
+}
+
+.mini-tier-btn {
+  flex: 1;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--line);
+  color: var(--ink-dim);
+  font-family: 'Space Grotesk', sans-serif;
+  font-weight: 700;
+  font-size: 15px;
+  padding: 8px 0;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.mini-tier-btn.selected {
+  background: var(--tc);
+  border-color: var(--tc);
+  color: #151319;
+}
+
+/* Visualização da Tier List no Palpite */
+.visual-tier-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.vtl-row {
+  display: flex;
+  background: var(--surface2);
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  min-height: 44px;
+}
+
+.vtl-label {
+  font-family: 'Space Grotesk', sans-serif;
+  font-weight: 700;
+  font-size: 18px;
+  color: #151319;
+  width: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.vtl-items {
+  padding: 8px 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.vtl-item {
+  background: rgba(255, 255, 255, 0.1);
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 14px;
+}
+
+.pill-name {
+  font-weight: 600;
+  font-size: 13px;
+  padding: 3px 9px;
+  border-radius: 6px;
+  background: var(--surface2);
+  border: 1px solid var(--line);
+}
+
+.player-btns {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.player-guess-btn {
+  background: var(--surface2);
+  border: 1px solid var(--line);
+  color: var(--ink);
+  font-family: 'Space Grotesk', sans-serif;
+  font-weight: 600;
+  font-size: 15px;
+  padding: 14px;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.player-guess-btn:hover {
+  border-color: var(--brand);
+  background: rgba(255, 207, 77, 0.1);
+}
+
+@media (min-width: 600px) {
+  .tier-item-row {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .item-tier-btns {
+    width: 200px;
+  }
+  .player-btns {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+  .player-guess-btn {
+    flex: 1 1 calc(50% - 4px);
+  }
+}
+
 .theme-controls {
   display: flex;
   align-items: center;

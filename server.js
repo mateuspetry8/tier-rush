@@ -71,8 +71,9 @@ function newRoom(code, hostId) {
   return {
     code,
     hostId,
+    mode: 'guess_tier', // 'guess_tier' | 'guess_creator'
     players: {}, // id -> {name, score, connected, socketId}
-    phase: 'lobby', // lobby | writing | guessing | reveal | scoreboard | end
+    phase: 'lobby', // lobby | writing | making_tier_lists | guessing | reveal | scoreboard | end
     round: 0,
     maxRounds: 6,
     theme: '',
@@ -80,9 +81,10 @@ function newRoom(code, hostId) {
     activeThemes: [...THEMES],
     tiers: {}, // id -> tier, only for current round
     submissions: {}, // id -> text, only for current round
+    tierLists: {}, // id -> { [itemId]: tier } (guess_creator mode)
     order: [], // ids in guessing order for current round
     turnIndex: 0,
-    guesses: {}, // submitterId -> { guesserId: tier }
+    guesses: {}, // submitterId -> { guesserId: tier/playerId }
     lastReveal: null,
     autoTimer: null,      // setTimeout handle para avanço automático
     autoAdvanceAt: null,  // epoch ms de quando o auto-avanço dispara (enviado ao cliente)
@@ -105,6 +107,7 @@ function connectedCount(room) {
 function buildView(room, forId) {
   const base = {
     code: room.code,
+    mode: room.mode,
     phase: room.phase,
     round: room.round,
     maxRounds: room.maxRounds,
@@ -118,9 +121,18 @@ function buildView(room, forId) {
   };
 
   if (room.phase === 'writing') {
-    base.myTier = room.tiers[forId] || null;
+    if (room.mode === 'guess_tier') {
+      base.myTier = room.tiers[forId] || null;
+    }
     base.mySubmitted = !!room.submissions[forId];
     base.submittedCount = Object.keys(room.submissions).length;
+  }
+
+  if (room.phase === 'making_tier_lists') {
+    // Envia todas as submissões, mas sem o nome do autor
+    base.allSubmissions = Object.entries(room.submissions).map(([id, text]) => ({ id, text }));
+    base.myTierListSubmitted = !!room.tierLists[forId];
+    base.tierListsSubmittedCount = Object.keys(room.tierLists).length;
   }
 
   if (room.phase === 'guessing' || room.phase === 'reveal') {
@@ -132,7 +144,14 @@ function buildView(room, forId) {
     base.currentSubmitterId = submitterId;
     base.currentSubmitterName = submitterName;
     base.isCurrentSubmitter = submitterId === forId;
-    base.currentSubmissionText = room.submissions[submitterId] || '';
+    
+    if (room.mode === 'guess_tier') {
+      base.currentSubmissionText = room.submissions[submitterId] || '';
+    } else {
+      base.currentTierList = room.tierLists[submitterId] || {};
+      base.allSubmissions = Object.entries(room.submissions).map(([id, text]) => ({ id, text }));
+    }
+
     base.guessCount = Object.keys(guessMap).length;
     base.guessTotal = Math.max(0, playerList(room).length - 1);
     base.myGuess = guessMap[forId] || null;
@@ -157,9 +176,12 @@ function broadcastRoom(code) {
 
 function assignTiersForRound(room) {
   const tierData = {};
-  Object.keys(room.players).forEach((pid) => { tierData[pid] = randomTier(); });
+  if (room.mode === 'guess_tier') {
+    Object.keys(room.players).forEach((pid) => { tierData[pid] = randomTier(); });
+  }
   room.tiers = tierData;
   room.submissions = {};
+  room.tierLists = {};
   room.guesses = {};
 }
 
@@ -191,6 +213,25 @@ function scheduleAuto(room, delayMs, fn) {
 
 // ---- Transições compartilhadas (clique do anfitrião ou auto-avanço) ----
 
+function doGoToTierMaking(room) {
+  if (room.phase !== 'writing') return;
+  clearRoomTimer(room);
+  room.phase = 'making_tier_lists';
+  room.tierLists = {};
+  broadcastRoom(room.code);
+}
+
+function doGoToGuessingFromTierMaking(room) {
+  if (room.phase !== 'making_tier_lists') return;
+  clearRoomTimer(room);
+  room.order = shuffle(Object.keys(room.tierLists));
+  room.turnIndex = 0;
+  room.guesses = {};
+  room.lastReveal = null;
+  room.phase = 'guessing';
+  broadcastRoom(room.code);
+}
+
 function doGoToGuessing(room) {
   if (room.phase !== 'writing') return;
   clearRoomTimer(room);
@@ -206,26 +247,49 @@ function doReveal(room) {
   if (room.phase !== 'guessing') return;
   clearRoomTimer(room);
   const submitterId = room.order[room.turnIndex];
-  const actualTier = room.tiers[submitterId];
   const guessMap = room.guesses[submitterId] || {};
   const results = [];
   let submitterGain = 0;
-  Object.entries(guessMap).forEach(([guesserId, guess]) => {
-    const correct = guess === actualTier;
-    if (correct) {
-      room.players[guesserId].score += 1;
-      submitterGain += 1;
-    }
-    results.push({ guesserId, name: room.players[guesserId]?.name || '???', guess, correct });
-  });
-  if (submitterGain > 0) room.players[submitterId].score += submitterGain;
-  room.lastReveal = {
-    submitterId,
-    submitterName: room.players[submitterId]?.name || '???',
-    actualTier,
-    submitterGain,
-    results,
-  };
+
+  if (room.mode === 'guess_tier') {
+    const actualTier = room.tiers[submitterId];
+    Object.entries(guessMap).forEach(([guesserId, guess]) => {
+      const correct = guess === actualTier;
+      if (correct) {
+        room.players[guesserId].score += 1;
+        submitterGain += 1;
+      }
+      results.push({ guesserId, name: room.players[guesserId]?.name || '???', guess, correct });
+    });
+    if (submitterGain > 0) room.players[submitterId].score += submitterGain;
+    room.lastReveal = {
+      submitterId,
+      submitterName: room.players[submitterId]?.name || '???',
+      actualTier,
+      submitterGain,
+      results,
+    };
+  } else {
+    // guess_creator mode
+    const actualCreator = submitterId;
+    Object.entries(guessMap).forEach(([guesserId, guess]) => {
+      const correct = guess === actualCreator;
+      if (correct) {
+        room.players[guesserId].score += 1;
+      }
+      const guessedName = room.players[guess]?.name || '???';
+      results.push({ guesserId, name: room.players[guesserId]?.name || '???', guess: guessedName, correct });
+    });
+    // O criador da tier list não ganha pontos
+    room.lastReveal = {
+      submitterId,
+      submitterName: room.players[submitterId]?.name || '???',
+      actualTier: null,
+      submitterGain: 0,
+      results,
+    };
+  }
+
   room.phase = 'reveal';
   // Após a revelação avança automaticamente em 10s
   scheduleAuto(room, 10000, () => doNextTurn(room));
@@ -276,7 +340,22 @@ function tryAutoWriting(room) {
   const submitted = Object.keys(room.submissions).length;
   const connected = connectedCount(room);
   if (connected >= 1 && submitted >= connected) {
-    scheduleAuto(room, 2000, () => doGoToGuessing(room));
+    if (room.mode === 'guess_tier') {
+      scheduleAuto(room, 2000, () => doGoToGuessing(room));
+    } else {
+      scheduleAuto(room, 2000, () => doGoToTierMaking(room));
+    }
+    return true;
+  }
+  return false;
+}
+
+function tryAutoTierMaking(room) {
+  if (room.phase !== 'making_tier_lists' || room.autoTimer) return false;
+  const submitted = Object.keys(room.tierLists).length;
+  const connected = connectedCount(room);
+  if (connected >= 1 && submitted >= connected) {
+    scheduleAuto(room, 2000, () => doGoToGuessingFromTierMaking(room));
     return true;
   }
   return false;
@@ -355,21 +434,42 @@ io.on('connection', (socket) => {
     if (!tryAutoWriting(room)) broadcastRoom(room.code);
   });
 
+  socket.on('change_mode', ({ mode }) => {
+    const room = currentRoom(socket);
+    if (!room || room.hostId !== socket.data.clientId || (room.phase !== 'lobby' && room.phase !== 'end')) return;
+    if (mode === 'guess_tier' || mode === 'guess_creator') {
+      room.mode = mode;
+      broadcastRoom(room.code);
+    }
+  });
+
+  socket.on('submit_tier_list', ({ tierList }) => {
+    const room = currentRoom(socket);
+    if (!room || room.phase !== 'making_tier_lists') return;
+    room.tierLists[socket.data.clientId] = tierList;
+    if (!tryAutoTierMaking(room)) broadcastRoom(room.code);
+  });
+
   // Anfitrião pode avançar manualmente antes do timer
   socket.on('go_to_guessing', () => {
     const room = currentRoom(socket);
     if (!room || room.hostId !== socket.data.clientId) return;
-    doGoToGuessing(room);
+    if (room.phase === 'writing' && room.mode === 'guess_tier') doGoToGuessing(room);
+    else if (room.phase === 'writing' && room.mode === 'guess_creator') doGoToTierMaking(room);
+    else if (room.phase === 'making_tier_lists') doGoToGuessingFromTierMaking(room);
   });
 
-  socket.on('submit_guess', ({ tier }) => {
+  socket.on('submit_guess', ({ guess }) => {
     const room = currentRoom(socket);
     if (!room || room.phase !== 'guessing') return;
     const submitterId = room.order[room.turnIndex];
     if (submitterId === socket.data.clientId) return;
-    if (!TIERS.includes(tier)) return;
+    
+    if (room.mode === 'guess_tier' && !TIERS.includes(guess)) return;
+    if (room.mode === 'guess_creator' && !room.players[guess]) return;
+    
     if (!room.guesses[submitterId]) room.guesses[submitterId] = {};
-    room.guesses[submitterId][socket.data.clientId] = tier;
+    room.guesses[submitterId][socket.data.clientId] = guess;
     // Se todos votaram, agenda auto-revelação.
     if (!tryAutoGuessing(room)) broadcastRoom(room.code);
   });
@@ -431,6 +531,7 @@ io.on('connection', (socket) => {
     room.activeThemes = [...THEMES];
     room.tiers = {};
     room.submissions = {};
+    room.tierLists = {};
     room.order = [];
     room.turnIndex = 0;
     room.guesses = {};
@@ -447,7 +548,7 @@ io.on('connection', (socket) => {
       p.connected = false;
       // Quando alguém desconecta, o threshold cai — pode ser que todos os
       // que restaram já tenham enviado/votado.
-      if (!tryAutoWriting(room) && !tryAutoGuessing(room)) {
+      if (!tryAutoWriting(room) && !tryAutoTierMaking(room) && !tryAutoGuessing(room)) {
         broadcastRoom(room.code);
       }
     }
