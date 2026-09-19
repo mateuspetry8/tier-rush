@@ -26,12 +26,13 @@ const PORT = process.env.PORT || 3000;
 const TIERS = ['S', 'A', 'B', 'C', 'D'];
 const THEMES = [
   'Sabores de pizza', 'Animes', 'Frutas', 'Jogos de videogame',
-  'Memes da internet', 'Personagens', 'Doces',
-  'Salgados de festa junina', 'Musicas', 'Séries e Filmes', 'Pokemons',
-  'Refrigerantes', 'Times de futebol', 'Super-heróis', 'Apps de celular',
-  'Comidas de boteco', 'Emojis',
-  'Tipos de pokemon (pode ser 2)', 'Trilhas sonoras de jogos', 'Instrumentos musicais',
-  'Redes sociais', 'Bosses de Hollow knight', 'Modos de Rocket League', 'Aliens do Ben 10',
+  'Personagens', 'Mapas', 'Doces',
+  'Salgados de festa', 'Musicas', 'Séries e Filmes', 'Pokemons',
+  'Refrigerantes', 'Super-heróis', 'Poderes', 'Morte dos animes',
+  'Emojis', 'Tipos de pokemon (pode ser 2)', 'Desenhos',
+  'Trilhas sonoras de jogos', 'Instrumentos musicais',
+  'Bosses de Hollow knight', 'Modos de Rocket League', 'Aliens do Ben 10',
+  'Luta dos animes', 'Lugares dos animes'
 ];
 
 // Todas as salas ativas vivem aqui, na memória do processo. Se você reiniciar
@@ -144,7 +145,7 @@ function buildView(room, forId) {
     base.currentSubmitterId = submitterId;
     base.currentSubmitterName = submitterName;
     base.isCurrentSubmitter = submitterId === forId;
-    
+
     if (room.mode === 'guess_tier') {
       base.currentSubmissionText = room.submissions[submitterId] || '';
     } else {
@@ -464,10 +465,10 @@ io.on('connection', (socket) => {
     if (!room || room.phase !== 'guessing') return;
     const submitterId = room.order[room.turnIndex];
     if (submitterId === socket.data.clientId) return;
-    
+
     if (room.mode === 'guess_tier' && !TIERS.includes(guess)) return;
     if (room.mode === 'guess_creator' && !room.players[guess]) return;
-    
+
     if (!room.guesses[submitterId]) room.guesses[submitterId] = {};
     room.guesses[submitterId][socket.data.clientId] = guess;
     // Se todos votaram, agenda auto-revelação.
