@@ -153,6 +153,10 @@ function hostNextRound() { state.socket.emit('next_round'); }
 function hostPlayAgain() { state.socket.emit('play_again'); }
 function toggleTheme(theme) { state.socket?.emit('toggle_theme', { theme }); }
 function setAllThemes(selectAll) { state.socket?.emit('set_all_themes', { selectAll }); }
+// Envia voto para uma tier list específica na fase guessing_all (pelo índice)
+function submitGuessForList(listIndex, playerId) {
+  state.socket.emit('submit_guess', { listIndex, guess: playerId });
+}
 
 // ---------------- render ----------------
 function render() {
@@ -317,6 +321,7 @@ function renderGame() {
     case 'writing': mainContent = renderWriting(); break;
     case 'making_tier_lists': mainContent = renderMakingTierLists(); break;
     case 'guessing': mainContent = renderGuessing(); break;
+    case 'guessing_all': mainContent = renderGuessingAll(); break;
     case 'reveal': mainContent = renderReveal(); break;
     case 'scoreboard': mainContent = renderScoreboard(); break;
     case 'end': mainContent = renderEnd(); break;
@@ -324,7 +329,7 @@ function renderGame() {
   }
 
   // Se for durante o jogo, exibe sidebar à esquerda
-  const showSidebar = ['writing', 'making_tier_lists', 'guessing', 'reveal'].includes(s.phase);
+  const showSidebar = ['writing', 'making_tier_lists', 'guessing', 'guessing_all', 'reveal'].includes(s.phase);
   if (showSidebar) {
     const layout = el(`<div class="game-layout"></div>`);
     layout.appendChild(renderSidebar());
@@ -639,6 +644,99 @@ function renderMakingTierLists() {
   return wrap;
 }
 
+function renderGuessingAll() {
+  const s = state.server;
+  const wrap = el(`<div></div>`);
+
+  wrap.appendChild(el(`
+    <div class="card">
+      <div class="round">Rodada ${s.round} de ${s.maxRounds} · Quem fez cada Tier List?</div>
+      <div class="theme-title" style="margin-bottom:10px;">${escapeHtml(s.theme)}</div>
+      <p class="status-line" style="margin-top:4px;">Veja todas as tier lists abaixo e vote em quem você acha que fez cada uma. A revelação só acontece depois que todo mundo votar!</p>
+    </div>
+  `));
+
+  const tierLists = s.allTierListsForGuessing || [];
+
+  tierLists.forEach(({ index, tierList }) => {
+    const isOwn = index === s.ownTierListIndex;
+    const myVotedId = s.myVotes?.[index];
+    const myVotedName = myVotedId ? s.players.find((p) => p.id === myVotedId)?.name : null;
+
+    const tlCard = el(`<div class="card guessing-all-card ${myVotedId ? 'voted' : ''} ${isOwn ? 'is-own' : ''}"></div>`);
+
+    // Cabeçalho do card
+    const header = el(`<div class="guessing-all-header"></div>`);
+    header.appendChild(el(`<div class="eyebrow">Tier List ${index + 1} de ${tierLists.length}</div>`));
+    if (isOwn) {
+      header.appendChild(el(`<span class="voted-badge own-badge">🔒 A sua</span>`));
+    } else if (myVotedName) {
+      header.appendChild(el(`<span class="voted-badge">✓ ${escapeHtml(myVotedName)}</span>`));
+    }
+    tlCard.appendChild(header);
+
+    // Visualização da tier list
+    const vtl = el(`<div class="visual-tier-list"></div>`);
+    TIERS.forEach((t) => {
+      const items = (s.allSubmissions || []).filter((sub) => tierList[sub.id] === t);
+      if (items.length > 0) {
+        vtl.appendChild(el(`
+          <div class="vtl-row">
+            <div class="vtl-label" style="background:${TIER_COLORS[t]}">${t}</div>
+            <div class="vtl-items">${items.map((i) => `<span class="vtl-item">${escapeHtml(i.text)}</span>`).join('')}</div>
+          </div>
+        `));
+      }
+    });
+    tlCard.appendChild(vtl);
+
+    // Botões de voto (apenas para tier lists que não são do próprio jogador)
+    if (!isOwn) {
+      const actions = el(`<div class="guess-actions"></div>`);
+      actions.appendChild(el(`<label style="margin-top:14px;">${myVotedName ? 'Mudar voto:' : 'De quem é essa Tier List?'}</label>`));
+      const btnRow = el(`<div class="player-btns"></div>`);
+      s.players.forEach((p) => {
+        if (p.id === clientId) return;
+        const isVoted = myVotedId === p.id;
+        const b = el(`<button class="btn player-guess-btn btn-block ${isVoted ? 'player-guess-active' : ''}">${isVoted ? '✓ ' : ''}${escapeHtml(p.name)}</button>`);
+        b.addEventListener('click', () => submitGuessForList(index, p.id));
+        btnRow.appendChild(b);
+      });
+      actions.appendChild(btnRow);
+      tlCard.appendChild(actions);
+    } else {
+      tlCard.appendChild(el(`<p class="status-line" style="margin-top:12px;">Essa é a sua tier list — você não vota nela.</p>`));
+    }
+
+    wrap.appendChild(tlCard);
+  });
+
+  // Barra de progresso geral
+  const myVotesCount = Object.keys(s.myVotes || {}).length;
+  const tierListsToVote = s.tierListsToVote || 0;
+  const progressCard = el(`<div class="card"></div>`);
+  progressCard.appendChild(el(`<div class="small">Você votou em <strong>${myVotesCount}</strong> de <strong>${tierListsToVote}</strong> tier lists</div>`));
+  progressCard.appendChild(el(`<div class="progress" style="margin-bottom:10px;"><div style="width:${tierListsToVote ? Math.round((myVotesCount / tierListsToVote) * 100) : 0}%"></div></div>`));
+  progressCard.appendChild(el(`<div class="small">${s.guessingAllFinishedCount} de ${s.guessingAllTotal} jogadores terminaram de votar</div>`));
+  const gaBanner = renderAutoBanner('Revelando em');
+  if (gaBanner) progressCard.appendChild(gaBanner);
+  wrap.appendChild(progressCard);
+
+  if (isHost()) {
+    const host = el(`
+      <div class="card">
+        <span class="host-tag">Painel do anfitrião</span>
+        <button class="btn btn-brand btn-block" id="revealAllBtn">Revelar resultados agora (${s.guessingAllFinishedCount}/${s.guessingAllTotal} prontos)</button>
+        <div class="copy-hint">Pode revelar mesmo sem todo mundo ter votado.</div>
+      </div>
+    `);
+    host.querySelector('#revealAllBtn').addEventListener('click', hostReveal);
+    wrap.appendChild(host);
+  }
+
+  return wrap;
+}
+
 function renderGuessing() {
   const s = state.server;
   const wrap = el(`<div></div>`);
@@ -761,7 +859,7 @@ function renderReveal() {
 
   const card = el(`
     <div class="card">
-      <div class="round">Rodada ${s.round} · Revelação</div>
+      <div class="round">Rodada ${s.round} · Revelação ${s.turnIndex + 1} de ${s.totalTurns}</div>
       ${s.mode === 'guess_tier' ? `
         <div class="submission-box">"${escapeHtml(s.currentSubmissionText)}"</div>
         <div class="tier-card" style="background:${TIER_COLORS[rev.actualTier]}">
@@ -771,11 +869,29 @@ function renderReveal() {
         <div class="small">+${rev.submitterGain} ponto(s) para ${escapeHtml(rev.submitterName)}</div>
       ` : `
         <div class="status-line mb">A Tier List era de...</div>
-        <h2 style="font-size:32px; color:var(--brand); text-align:center; margin-bottom: 20px;">${escapeHtml(rev.submitterName)}</h2>
+        <h2 style="font-size:32px; color:var(--brand); text-align:center; margin-bottom: 14px;">${escapeHtml(rev.submitterName)}</h2>
       `}
       <div class="divider"></div>
     </div>
   `);
+
+  // No modo guess_creator: exibe a tier list revelada abaixo do nome do autor
+  if (s.mode !== 'guess_tier' && s.currentTierList) {
+    const vtl = el(`<div class="visual-tier-list" style="margin-bottom:14px;"></div>`);
+    TIERS.forEach((t) => {
+      const items = (s.allSubmissions || []).filter((sub) => s.currentTierList[sub.id] === t);
+      if (items.length > 0) {
+        vtl.appendChild(el(`
+          <div class="vtl-row">
+            <div class="vtl-label" style="background:${TIER_COLORS[t]}">${t}</div>
+            <div class="vtl-items">${items.map((i) => `<span class="vtl-item">${escapeHtml(i.text)}</span>`).join('')}</div>
+          </div>
+        `));
+      }
+    });
+    const divider = card.querySelector('.divider');
+    card.insertBefore(vtl, divider);
+  }
   const guessList = el(`<div></div>`);
   rev.results.forEach((r) => {
     const guessHtml = s.mode === 'guess_tier' 

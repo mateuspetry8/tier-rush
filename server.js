@@ -74,7 +74,7 @@ function newRoom(code, hostId) {
     hostId,
     mode: 'guess_tier', // 'guess_tier' | 'guess_creator'
     players: {}, // id -> {name, score, connected, socketId}
-    phase: 'lobby', // lobby | writing | making_tier_lists | guessing | reveal | scoreboard | end
+    phase: 'lobby', // lobby | writing | making_tier_lists | guessing | guessing_all | reveal | scoreboard | end
     round: 0,
     maxRounds: 6,
     theme: '',
@@ -162,6 +162,35 @@ function buildView(room, forId) {
     base.lastReveal = room.lastReveal;
   }
 
+  // Fase de adivinhação coletiva (guess_creator): todos votam em todas as tier lists
+  // antes de qualquer revelação, para evitar processo de eliminação.
+  if (room.phase === 'guessing_all') {
+    // Envia as tier lists indexadas sem revelar o autor
+    base.allTierListsForGuessing = room.order.map((submitterId, idx) => ({
+      index: idx,
+      tierList: room.tierLists[submitterId] || {},
+    }));
+    base.allSubmissions = Object.entries(room.submissions).map(([id, text]) => ({ id, text }));
+    base.ownTierListIndex = room.order.indexOf(forId);
+
+    // Meus votos até agora: { índice -> playerId votado }
+    const myVotes = {};
+    room.order.forEach((submitterId, idx) => {
+      const v = room.guesses[submitterId]?.[forId];
+      if (v !== undefined) myVotes[idx] = v;
+    });
+    base.myVotes = myVotes;
+    base.tierListsToVote = room.order.filter((id) => id !== forId).length;
+
+    // Progresso geral: quantos jogadores já votaram em tudo
+    const connectedEntries = Object.entries(room.players).filter(([, p]) => p.connected);
+    const finishedCount = connectedEntries.filter(([pid]) =>
+      room.order.every((sid) => sid === pid || room.guesses[sid]?.[pid] !== undefined)
+    ).length;
+    base.guessingAllFinishedCount = finishedCount;
+    base.guessingAllTotal = connectedEntries.length;
+  }
+
   return base;
 }
 
@@ -229,7 +258,8 @@ function doGoToGuessingFromTierMaking(room) {
   room.turnIndex = 0;
   room.guesses = {};
   room.lastReveal = null;
-  room.phase = 'guessing';
+  // No modo guess_creator todos votam em tudo de uma vez antes de qualquer revelação
+  room.phase = 'guessing_all';
   broadcastRoom(room.code);
 }
 
@@ -244,9 +274,9 @@ function doGoToGuessing(room) {
   broadcastRoom(room.code);
 }
 
-function doReveal(room) {
-  if (room.phase !== 'guessing') return;
-  clearRoomTimer(room);
+// Calcula e aplica os resultados de revelação para o turnIndex atual,
+// atualiza pontuações e seta room.lastReveal. Não altera room.phase.
+function computeRevealForTurn(room) {
   const submitterId = room.order[room.turnIndex];
   const guessMap = room.guesses[submitterId] || {};
   const results = [];
@@ -290,7 +320,15 @@ function doReveal(room) {
       results,
     };
   }
+}
 
+// Inicia a fase de revelação.
+// Para guess_tier: chamado a partir de 'guessing' (um turno por vez).
+// Para guess_creator: chamado a partir de 'guessing_all' (todos os votos já coletados).
+function doReveal(room) {
+  if (room.phase !== 'guessing' && room.phase !== 'guessing_all') return;
+  clearRoomTimer(room);
+  computeRevealForTurn(room);
   room.phase = 'reveal';
   // Após a revelação avança automaticamente em 10s
   scheduleAuto(room, 10000, () => doNextTurn(room));
@@ -308,8 +346,16 @@ function doNextTurn(room) {
     scheduleAuto(room, 5000, () => doNextRound(room));
   } else {
     room.turnIndex = nextIndex;
-    room.phase = 'guessing';
-    broadcastRoom(room.code);
+    if (room.mode === 'guess_creator') {
+      // Todos os votos já foram coletados na fase guessing_all;
+      // basta calcular e exibir o próximo reveal sem voltar para guessing.
+      computeRevealForTurn(room);
+      // phase permanece 'reveal'; scheduleAuto faz o broadcastRoom
+      scheduleAuto(room, 10000, () => doNextTurn(room));
+    } else {
+      room.phase = 'guessing';
+      broadcastRoom(room.code);
+    }
   }
 }
 
@@ -371,6 +417,22 @@ function tryAutoGuessing(room) {
     .filter((p) => p.connected)
     .length - (room.players[submitterId]?.connected ? 1 : 0);
   if (connectedNonSubmitters >= 1 && Object.keys(guessMap).length >= connectedNonSubmitters) {
+    scheduleAuto(room, 2000, () => doReveal(room));
+    return true;
+  }
+  return false;
+}
+
+// Verifica se todos os jogadores conectados já votaram em todas as tier lists
+// na fase guessing_all (modo guess_creator). Avança para revelação se sim.
+function tryAutoGuessingAll(room) {
+  if (room.phase !== 'guessing_all' || room.autoTimer) return false;
+  const connectedEntries = Object.entries(room.players).filter(([, p]) => p.connected);
+  if (connectedEntries.length < 1) return false;
+  const allDone = connectedEntries.every(([pid]) =>
+    room.order.every((sid) => sid === pid || room.guesses[sid]?.[pid] !== undefined)
+  );
+  if (allDone) {
     scheduleAuto(room, 2000, () => doReveal(room));
     return true;
   }
@@ -460,25 +522,37 @@ io.on('connection', (socket) => {
     else if (room.phase === 'making_tier_lists') doGoToGuessingFromTierMaking(room);
   });
 
-  socket.on('submit_guess', ({ guess }) => {
+  socket.on('submit_guess', ({ guess, listIndex }) => {
     const room = currentRoom(socket);
-    if (!room || room.phase !== 'guessing') return;
-    const submitterId = room.order[room.turnIndex];
-    if (submitterId === socket.data.clientId) return;
+    if (!room) return;
 
-    if (room.mode === 'guess_tier' && !TIERS.includes(guess)) return;
-    if (room.mode === 'guess_creator' && !room.players[guess]) return;
-
-    if (!room.guesses[submitterId]) room.guesses[submitterId] = {};
-    room.guesses[submitterId][socket.data.clientId] = guess;
-    // Se todos votaram, agenda auto-revelação.
-    if (!tryAutoGuessing(room)) broadcastRoom(room.code);
+    if (room.phase === 'guessing') {
+      // Modo guess_tier: vota no tier de um jogador por vez
+      const submitterId = room.order[room.turnIndex];
+      if (submitterId === socket.data.clientId) return;
+      if (room.mode === 'guess_tier' && !TIERS.includes(guess)) return;
+      if (room.mode === 'guess_creator' && !room.players[guess]) return;
+      if (!room.guesses[submitterId]) room.guesses[submitterId] = {};
+      room.guesses[submitterId][socket.data.clientId] = guess;
+      if (!tryAutoGuessing(room)) broadcastRoom(room.code);
+    } else if (room.phase === 'guessing_all') {
+      // Modo guess_creator: vota em uma tier list específica pelo índice
+      if (listIndex === undefined || listIndex < 0 || listIndex >= room.order.length) return;
+      const submitterId = room.order[listIndex];
+      if (submitterId === socket.data.clientId) return; // não pode votar na própria
+      if (!room.players[guess]) return;
+      if (!room.guesses[submitterId]) room.guesses[submitterId] = {};
+      room.guesses[submitterId][socket.data.clientId] = guess;
+      if (!tryAutoGuessingAll(room)) broadcastRoom(room.code);
+    }
   });
 
   // Anfitrião pode revelar antes do timer
+  // Aceita tanto 'guessing' (guess_tier) quanto 'guessing_all' (guess_creator)
   socket.on('reveal', () => {
     const room = currentRoom(socket);
-    if (!room || room.hostId !== socket.data.clientId || room.phase !== 'guessing') return;
+    if (!room || room.hostId !== socket.data.clientId) return;
+    if (room.phase !== 'guessing' && room.phase !== 'guessing_all') return;
     doReveal(room);
   });
 
@@ -549,7 +623,7 @@ io.on('connection', (socket) => {
       p.connected = false;
       // Quando alguém desconecta, o threshold cai — pode ser que todos os
       // que restaram já tenham enviado/votado.
-      if (!tryAutoWriting(room) && !tryAutoTierMaking(room) && !tryAutoGuessing(room)) {
+      if (!tryAutoWriting(room) && !tryAutoTierMaking(room) && !tryAutoGuessing(room) && !tryAutoGuessingAll(room)) {
         broadcastRoom(room.code);
       }
     }
