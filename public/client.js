@@ -57,9 +57,18 @@ function connectSocket() {
   state.socket.on('connect', () => { state.connected = true; render(); });
   state.socket.on('disconnect', () => { state.connected = false; render(); });
   state.socket.on('state', (payload) => {
+    const prevPhase = state.server?.phase;
     state.server = payload;
     state.joined = true;
     state.error = '';
+    // Limpa os rascunhos locais ao entrar em fases de escrita/classificação,
+    // para evitar que seleções de rodadas anteriores fiquem salvas.
+    if (payload.phase === 'making_tier_lists' && prevPhase !== 'making_tier_lists') {
+      state.draftTierList = {};
+    }
+    if (payload.phase === 'writing' && prevPhase !== 'writing') {
+      state.draftText = '';
+    }
     render();
   });
   state.socket.on('join_error', (msg) => {
